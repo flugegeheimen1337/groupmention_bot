@@ -1,6 +1,6 @@
 import unittest
 
-from app.login_ui import is_login_code, mask_phone, normalize_login_code
+from app.login_ui import is_login_code, mask_phone, normalize_login_code, user_can_connect
 
 
 class LoginUiTests(unittest.TestCase):
@@ -15,6 +15,13 @@ class LoginUiTests(unittest.TestCase):
         self.assertFalse(is_login_code("код 11497"))
         self.assertFalse(is_login_code("1234"))
         self.assertFalse(is_login_code("123456"))
+
+    def test_expected_username_can_connect_without_numeric_id(self):
+        self.assertTrue(user_can_connect(5, "MaxM_DM", None, "maxm_dm"))
+        self.assertFalse(user_can_connect(5, "Assistant_Polina", None, "maxm_dm"))
+
+    def test_numeric_owner_can_connect(self):
+        self.assertTrue(user_can_connect(5, None, 5, "maxm_dm"))
 
 
 if __name__ == "__main__":

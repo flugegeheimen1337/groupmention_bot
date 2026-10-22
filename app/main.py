@@ -21,7 +21,7 @@ from app.config import Settings, load_settings
 from app.db import Store
 from app.format import notification_html, sender_label
 from app.links import build_message_link
-from app.login_ui import is_login_code, mask_phone, normalize_login_code
+from app.login_ui import is_login_code, mask_phone, normalize_login_code, user_can_connect
 from app.mentions import is_explicit_mention, is_group_chat
 
 log = logging.getLogger("groupmention")
@@ -68,8 +68,8 @@ def login_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def _is_owner(user_id: int | None, settings: Settings) -> bool:
-    return user_id is not None and settings.owner_id is not None and user_id == settings.owner_id
+def _is_owner(user_id: int | None, username: str | None, settings: Settings) -> bool:
+    return user_can_connect(user_id, username, settings.owner_id, settings.expected_username)
 
 
 async def _finish_login(message: Message, client: TelegramClient, store: Store, settings: Settings, pending: PendingLogin) -> None:
@@ -98,7 +98,7 @@ def _register_bot(
     @dp.message(CommandStart())
     async def on_start(message: Message) -> None:
         user = message.from_user
-        if not _is_owner(user.id if user else None, settings):
+        if not _is_owner(user.id if user else None, user.username if user else None, settings):
             await message.answer("Этот бот присылает уведомления только владельцу аккаунта.")
             return
         if await client.is_user_authorized():
@@ -110,7 +110,7 @@ def _register_bot(
     @dp.callback_query(F.data == "login:send")
     async def on_send_code(query: CallbackQuery) -> None:
         user = query.from_user
-        if not _is_owner(user.id, settings):
+        if not _is_owner(user.id, user.username, settings):
             await query.answer("Это действие доступно только владельцу.", show_alert=True)
             return
         if await client.is_user_authorized():
@@ -142,7 +142,7 @@ def _register_bot(
     @dp.callback_query(F.data == "login:enter")
     async def on_enter_code(query: CallbackQuery) -> None:
         user = query.from_user
-        if not _is_owner(user.id, settings):
+        if not _is_owner(user.id, user.username, settings):
             await query.answer("Это действие доступно только владельцу.", show_alert=True)
             return
         if pending.step != "code" or not pending.code_hash:
@@ -158,7 +158,7 @@ def _register_bot(
     @dp.message()
     async def on_login_text(message: Message) -> None:
         user = message.from_user
-        if not _is_owner(user.id if user else None, settings) or pending.step is None:
+        if not _is_owner(user.id if user else None, user.username if user else None, settings) or pending.step is None:
             return
         text = message.text or ""
         if pending.step == "code":
