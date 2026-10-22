@@ -14,6 +14,7 @@ class Settings:
     bot_token: str | None
     phone: str | None
     expected_username: str | None
+    owner_id: int | None
     session_path: Path
     database_path: Path
 
@@ -50,6 +51,8 @@ def load_settings(*, require_bot: bool) -> Settings:
     bot_token = os.environ.get("BOT_TOKEN", "").strip() or None
     phone = normalize_phone(os.environ.get("PHONE"))
     expected_username = normalize_username(os.environ.get("EXPECTED_USERNAME"))
+    raw_owner = os.environ.get("OWNER_ID", "").strip()
+    owner_id = int(raw_owner) if raw_owner else None
     if not raw_id or not api_hash:
         raise SystemExit("В .env нужны API_ID и API_HASH.")
     try:
@@ -64,6 +67,7 @@ def load_settings(*, require_bot: bool) -> Settings:
         bot_token=bot_token,
         phone=phone,
         expected_username=expected_username,
+        owner_id=owner_id,
         session_path=_resolve(os.environ.get("SESSION_PATH", "data/user").strip()),
         database_path=_resolve(os.environ.get("DATABASE_PATH", "data/mentions.sqlite3").strip()),
     )
