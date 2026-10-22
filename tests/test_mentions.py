@@ -1,6 +1,6 @@
 import unittest
 
-from app.format import notification_html, sender_label
+from app.format import notification_html, sender_label, with_read_status
 from app.links import build_message_link
 from app.mentions import is_explicit_mention, is_group_chat
 from app.textutil import utf16_slice
@@ -110,6 +110,12 @@ class FormatTests(unittest.TestCase):
 
     def test_empty_message(self):
         self.assertIn("Сообщение без текста", notification_html("Группа", "Иван", "  "))
+
+    def test_read_status_labels_the_group_message(self):
+        body = notification_html("Группа", "Иван", "текст")
+        self.assertTrue(with_read_status(body, False).startswith("<b>Не прочитано</b>\n"))
+        self.assertTrue(with_read_status(body, True).startswith("<b>Прочитано</b>\n"))
+        self.assertIn("<b>Группа</b>", with_read_status(body, True))
 
 
 if __name__ == "__main__":

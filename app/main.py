@@ -6,15 +6,17 @@ import time
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.filters import CommandStart
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, Message, ReplyKeyboardMarkup
-from telethon import TelegramClient
+from telethon import TelegramClient, utils
 from telethon.errors import FloodWaitError
+from telethon.tl.functions.messages import GetPeerDialogsRequest
+from telethon.tl.types import InputDialogPeer
 
 from app.config import load_settings, normalize_phone
-from app.db import Store
-from app.format import notification_html, sender_label
+from app.db import Alert, Store
+from app.format import notification_html, sender_label, with_read_status
 from app.hub import AccountHub
 from app.links import build_message_link
 from app.login_ui import code_was_sent, describe_code_delivery, is_login_code, mask_phone
@@ -50,16 +52,72 @@ def login_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
-async def _send(bot: Bot, chat_id: int, text: str, url: str | None) -> None:
+async def _send(bot: Bot, chat_id: int, text: str, url: str | None):
     markup = _button(url) if url else None
     for attempt in range(4):
         try:
-            await bot.send_message(chat_id, text, reply_markup=markup)
-            return
+            return await bot.send_message(chat_id, text, reply_markup=markup)
         except TelegramRetryAfter as exc:
             if attempt == 3:
                 raise
             await asyncio.sleep(exc.retry_after + 1)
+    return None
+
+
+async def _edit(bot: Bot, chat_id: int, message_id: int, text: str, url: str | None) -> bool:
+    markup = _button(url) if url else None
+    for attempt in range(4):
+        try:
+            await bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=markup)
+            return True
+        except TelegramRetryAfter as exc:
+            if attempt == 3:
+                return False
+            await asyncio.sleep(exc.retry_after + 1)
+        except TelegramBadRequest as exc:
+            detail = str(exc).lower()
+            if "not modified" in detail or "not found" in detail or "message_id_invalid" in detail:
+                return True
+            log.warning("Не удалось обновить статус уведомления: %s", exc)
+            return False
+        except Exception:
+            log.exception("Не удалось обновить статус уведомления")
+            return False
+    return False
+
+
+async def _apply_read(bot: Bot, store: Store, alert: Alert) -> None:
+    changed = await _edit(bot, alert.bot_chat_id, alert.bot_message_id, with_read_status(alert.body, True), alert.url)
+    if not changed:
+        return
+    store.mark_alert_read(alert.user_id, alert.chat_id, alert.message_id)
+    log.info("Прочитано: user %s, chat %s, message %s", alert.user_id, alert.chat_id, alert.message_id)
+
+
+async def _read_max_by_chat(client: TelegramClient, chat_ids: list[int]) -> dict[int, int]:
+    found: dict[int, int] = {}
+    for start in range(0, len(chat_ids), 20):
+        peers = []
+        for chat_id in chat_ids[start:start + 20]:
+            try:
+                entity = await client.get_input_entity(chat_id)
+            except Exception:
+                log.info("Чат %s недоступен для проверки прочтения", chat_id)
+                continue
+            peers.append(InputDialogPeer(entity))
+        if not peers:
+            continue
+        result = await client(GetPeerDialogsRequest(peers))
+        for dialog in result.dialogs:
+            found[utils.get_peer_id(dialog.peer)] = dialog.read_inbox_max_id or 0
+    return found
+
+
+async def _sync_read_marks(client: TelegramClient, bot: Bot, store: Store, user_id: int) -> None:
+    maxima = await _read_max_by_chat(client, store.unread_chat_ids(user_id))
+    for chat_id, max_id in maxima.items():
+        for alert in store.unread_up_to(user_id, chat_id, max_id):
+            await _apply_read(bot, store, alert)
 
 
 async def _request_code(message: Message, hub: AccountHub) -> None:
@@ -197,15 +255,38 @@ async def _on_message(event, client: TelegramClient, bot: Bot, store: Store) -> 
     )
     url = build_message_link(event.chat_id, message.id, getattr(chat, "username", None))
     try:
-        await _send(bot, notify_chat, text, url)
+        sent = await _send(bot, notify_chat, with_read_status(text, False), url)
     except TelegramForbiddenError:
         log.error("Бот не может написать пользователю %s. Нужно нажать «Запустить».", me.id)
         return
     except Exception:
         log.exception("Не удалось отправить уведомление")
         return
+    if sent is None:
+        return
     store.mark_sent(me.id, event.chat_id, message.id)
+    store.save_alert(me.id, event.chat_id, message.id, sent.chat.id, sent.message_id, text, url, False)
     log.info("Уведомление отправлено: user %s, chat %s, message %s", me.id, event.chat_id, message.id)
+    try:
+        maxima = await _read_max_by_chat(client, [event.chat_id])
+    except Exception:
+        log.exception("Не удалось проверить, прочитано ли сообщение")
+        return
+    if message.id <= maxima.get(event.chat_id, 0):
+        for alert in store.unread_up_to(me.id, event.chat_id, message.id):
+            await _apply_read(bot, store, alert)
+
+
+async def _on_read(event, client: TelegramClient, bot: Bot, store: Store) -> None:
+    if getattr(event, "contents", False) or not event.inbox or not event.max_id or event.chat_id is None:
+        return
+    if not await client.is_user_authorized():
+        return
+    me = await client.get_me()
+    if me is None:
+        return
+    for alert in store.unread_up_to(me.id, event.chat_id, event.max_id):
+        await _apply_read(bot, store, alert)
 
 
 async def main() -> None:
@@ -226,8 +307,17 @@ async def main() -> None:
     async def on_mention(event, client) -> None:
         await _on_message(event, client, bot, store)
 
+    async def on_read(event, client) -> None:
+        await _on_read(event, client, bot, store)
+
     hub.on_mention = on_mention
+    hub.on_read = on_read
     await hub.load_saved_sessions()
+    for account_id, client in list(hub.clients.items()):
+        try:
+            await _sync_read_marks(client, bot, store, account_id)
+        except Exception:
+            log.exception("Не удалось сверить прочитанные сообщения для %s", account_id)
     dp = Dispatcher()
     _register_bot(dp, hub, bot, store)
 

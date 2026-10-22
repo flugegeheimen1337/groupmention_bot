@@ -36,6 +36,7 @@ class AccountHub:
         self._listening: set[int] = set()
         self.base_url = public_base()
         self.on_mention = None
+        self.on_read = None
 
     def for_user(self, user_id: int) -> PendingLogin:
         if user_id not in self.pending:
@@ -114,6 +115,11 @@ class AccountHub:
 
         client.add_event_handler(handler, events.NewMessage(incoming=True))
         client.add_event_handler(handler, events.MessageEdited(incoming=True))
+        if self.on_read is not None:
+            async def read_handler(event, bound_client=client) -> None:
+                await self.on_read(event, bound_client)
+
+            client.add_event_handler(read_handler, events.MessageRead(inbox=True))
         self._listening.add(account_id)
 
     async def complete(self, pending: PendingLogin, bot) -> None:

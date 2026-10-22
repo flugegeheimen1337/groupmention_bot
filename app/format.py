@@ -20,6 +20,11 @@ def sender_label(sender: object | None, post_author: str | None = None) -> str:
     return name
 
 
+def with_read_status(body: str, read: bool) -> str:
+    label = "Прочитано" if read else "Не прочитано"
+    return f"<b>{label}</b>\n{body}"
+
+
 def notification_html(chat_title: str, sender: str, text: str | None) -> str:
     body = (text or "").strip() or "Сообщение без текста"
     escaped = html_escape(body)
