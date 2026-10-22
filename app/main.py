@@ -7,21 +7,16 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
 from aiogram.filters import CommandStart
-from aiogram.types import CallbackQuery, ForceReply, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telethon import TelegramClient, events
-from telethon.errors import (
-    FloodWaitError,
-    PasswordHashInvalidError,
-    PhoneCodeExpiredError,
-    PhoneCodeInvalidError,
-    SessionPasswordNeededError,
-)
+from telethon.errors import FloodWaitError, PasswordHashInvalidError
 
 from app.config import Settings, load_settings
 from app.db import Store
 from app.format import notification_html, sender_label
 from app.links import build_message_link
-from app.login_ui import is_login_code, mask_phone, normalize_login_code, user_can_connect
+from app.login_ui import is_login_code, mask_phone, user_can_connect
+from app.login_web import code_sent_text, start_login_site
 from app.mentions import is_explicit_mention, is_group_chat
 
 log = logging.getLogger("groupmention")
@@ -46,9 +41,10 @@ async def _send(bot: Bot, chat_id: int, text: str, url: str | None) -> None:
 
 
 LOGIN_TEXT = (
-    "Подключение аккаунта делается в этом чате.\n"
-    "1. Нажмите «Получить код». Код придёт в служебный чат «Telegram», не сюда.\n"
-    "2. Нажмите «Ввести код» и отправьте пять цифр."
+    "Подключение аккаунта делается так.\n"
+    "1. Нажмите «Получить код». Код придёт в служебный чат «Telegram».\n"
+    "2. Откройте ссылку из следующего сообщения и введите пять цифр на странице.\n\n"
+    "В этот чат код отправлять нельзя: Telegram сразу его отменяет."
 )
 
 
@@ -56,6 +52,9 @@ class PendingLogin:
     def __init__(self) -> None:
         self.code_hash: str | None = None
         self.step: str | None = None
+        self.chat_id: int | None = None
+        self.web_token: str | None = None
+        self.page_url: str | None = None
         self.lock = asyncio.Lock()
 
 
@@ -131,13 +130,12 @@ def _register_bot(
             log.exception("Не удалось отправить код")
             await query.answer("Не удалось отправить код. Попробуйте ещё раз.", show_alert=True)
             return
+        if query.message:
+            pending.chat_id = query.message.chat.id
         await query.answer("Код отправлен")
         if query.message:
-            await query.message.answer(
-                f"Код отправлен на {mask_phone(settings.phone)}. "
-                "Откройте служебный чат «Telegram» и нажмите «Ввести код». "
-                "Предыдущий код больше не действует."
-            )
+            url = pending.page_url or ""
+            await query.message.answer(code_sent_text(mask_phone(settings.phone or ""), url))
 
     @dp.callback_query(F.data == "login:enter")
     async def on_enter_code(query: CallbackQuery) -> None:
@@ -145,14 +143,14 @@ def _register_bot(
         if not _is_owner(user.id, user.username, settings):
             await query.answer("Это действие доступно только владельцу.", show_alert=True)
             return
-        if pending.step != "code" or not pending.code_hash:
-            await query.answer("Сначала нажмите «Получить код».", show_alert=True)
+        if not pending.page_url:
+            await query.answer("Страница ввода кода ещё не запущена.", show_alert=True)
             return
         await query.answer()
         if query.message:
             await query.message.answer(
-                "Введите пять цифр кода",
-                reply_markup=ForceReply(input_field_placeholder="12345"),
+                "Введите код на странице, не в этот чат. Иначе Telegram его отменит.\n"
+                + pending.page_url
             )
 
     @dp.message()
@@ -162,35 +160,13 @@ def _register_bot(
             return
         text = message.text or ""
         if pending.step == "code":
-            if not is_login_code(text):
-                await message.answer("Нужны пять цифр кода. Нажмите «Ввести код» и отправьте их.")
-                return
-            try:
-                async with pending.lock:
-                    await client.sign_in(
-                        settings.phone,
-                        normalize_login_code(text),
-                        phone_code_hash=pending.code_hash,
-                    )
-            except SessionPasswordNeededError:
-                pending.step = "password"
-                await message.answer(
-                    "Код принят. Введите пароль двухэтапной проверки следующим сообщением. Он не сохраняется."
-                )
-                return
-            except PhoneCodeInvalidError:
-                await message.answer("Код не подошёл. Проверьте цифры или запросите новый кнопкой «Получить код».")
-                return
-            except PhoneCodeExpiredError:
+            if is_login_code(text):
                 pending.step = None
                 pending.code_hash = None
-                await message.answer("Этот код уже не действует. Нажмите «Получить код» ещё раз.")
-                return
-            except Exception:
-                log.exception("Не удалось войти по коду")
-                await message.answer("Войти по этому коду не получилось. Нажмите «Получить код» ещё раз.")
-                return
-            await _finish_login(message, client, store, settings, pending)
+                await message.answer(
+                    "Этот код уже нельзя использовать: Telegram отменяет его, если отправить цифры сообщением. "
+                    "Нажмите «Получить код» и введите новый код на странице по ссылке."
+                )
             return
         if pending.step == "password":
             try:
@@ -271,6 +247,11 @@ async def main() -> None:
     )
     dp = Dispatcher()
     pending = PendingLogin()
+    pending.page_url = await start_login_site(client, store, settings, pending, bot)
+    if pending.page_url:
+        log.info("Страница ввода кода запущена")
+    else:
+        log.error("LOGIN_PUBLIC_HOST не задан, страницу ввода кода не запустить")
     _register_bot(dp, client, store, settings, pending)
     if not await client.is_user_authorized() and settings.owner_id is not None:
         try:

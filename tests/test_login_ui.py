@@ -1,6 +1,7 @@
 import unittest
 
 from app.login_ui import is_login_code, mask_phone, normalize_login_code, user_can_connect
+from app.login_web import code_sent_text
 
 
 class LoginUiTests(unittest.TestCase):
@@ -22,6 +23,11 @@ class LoginUiTests(unittest.TestCase):
 
     def test_numeric_owner_can_connect(self):
         self.assertTrue(user_can_connect(5, None, 5, "maxm_dm"))
+
+    def test_code_instructions_keep_the_code_out_of_telegram(self):
+        text = code_sent_text("+971***75", "http://example.test/abc")
+        self.assertIn("сразу отменяет код", text)
+        self.assertIn("http://example.test/abc", text)
 
 
 if __name__ == "__main__":
