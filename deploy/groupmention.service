@@ -1,0 +1,15 @@
+[Unit]
+Description=Telegram mention collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/groupmention
+EnvironmentFile=/opt/groupmention/.env
+ExecStart=/opt/groupmention/.venv/bin/python -m app
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
