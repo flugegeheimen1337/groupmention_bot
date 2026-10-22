@@ -1,8 +1,6 @@
 import os
-import secrets
 
 from aiohttp import web
-from telethon import TelegramClient
 from telethon.errors import (
     PasswordHashInvalidError,
     PhoneCodeExpiredError,
@@ -10,8 +8,6 @@ from telethon.errors import (
     SessionPasswordNeededError,
 )
 
-from app.config import Settings
-from app.db import Store
 from app.login_ui import is_login_code, normalize_login_code
 
 PAGE = """<!doctype html>
@@ -57,18 +53,17 @@ def _page(notice: str, label: str, extra: str) -> web.Response:
     return web.Response(text=html, content_type="text/html")
 
 
-async def start_login_site(client: TelegramClient, store: Store, settings: Settings, pending, bot) -> str | None:
-    base = public_base()
-    if base is None:
-        return None
-    pending.web_token = secrets.token_urlsafe(18)
+async def start_login_site(hub, bot) -> bool:
+    if not hub.base_url:
+        return False
     port = int(os.environ.get("LOGIN_PORT", "8080").strip() or "8080")
 
-    def allowed(token: str) -> bool:
-        return token == pending.web_token
+    def pending_for(token: str):
+        return hub.pending_by_token(token)
 
     async def show(request: web.Request) -> web.Response:
-        if not allowed(request.match_info["token"]):
+        pending = pending_for(request.match_info["token"])
+        if pending is None:
             return web.Response(status=404, text="not found")
         if pending.step == "password":
             return _page(
@@ -83,10 +78,12 @@ async def start_login_site(client: TelegramClient, store: Store, settings: Setti
         )
 
     async def submit(request: web.Request) -> web.Response:
-        if not allowed(request.match_info["token"]):
+        pending = pending_for(request.match_info["token"])
+        if pending is None or pending.client is None:
             return web.Response(status=404, text="not found")
         form = await request.post()
         value = str(form.get("value", ""))
+        client = pending.client
         if pending.step == "password":
             try:
                 async with pending.lock:
@@ -95,16 +92,16 @@ async def start_login_site(client: TelegramClient, store: Store, settings: Setti
                 return _page("Пароль не подошёл.", "Пароль", 'type="password"')
             except Exception:
                 return _page("Пароль не принят. Введите его ещё раз.", "Пароль", 'type="password"')
-            await _complete(bot, client, store, settings, pending)
+            await hub.complete(pending, bot)
             return web.Response(text="Вход выполнен. Вернитесь в бота MentionMe.", content_type="text/plain")
-        if pending.step != "code" or not pending.code_hash:
+        if pending.step != "code" or not pending.code_hash or not pending.phone:
             return _page("Сначала в боте нажмите «Получить код».", "Код", 'inputmode="numeric"')
         if not is_login_code(value):
             return _page("Нужны пять цифр.", "Код", 'inputmode="numeric"')
         try:
             async with pending.lock:
                 await client.sign_in(
-                    settings.phone,
+                    pending.phone,
                     normalize_login_code(value),
                     phone_code_hash=pending.code_hash,
                 )
@@ -123,7 +120,7 @@ async def start_login_site(client: TelegramClient, store: Store, settings: Setti
             return _page("Этот код уже не действует. В боте нажмите «Получить код» ещё раз.", "Код", 'inputmode="numeric"')
         except Exception:
             return _page("Войти не получилось. Запросите новый код в боте.", "Код", 'inputmode="numeric"')
-        await _complete(bot, client, store, settings, pending)
+        await hub.complete(pending, bot)
         return web.Response(text="Вход выполнен. Вернитесь в бота MentionMe.", content_type="text/plain")
 
     app = web.Application()
@@ -132,20 +129,4 @@ async def start_login_site(client: TelegramClient, store: Store, settings: Setti
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", port).start()
-    return f"{base}/{pending.web_token}"
-
-
-async def _complete(bot, client, store, settings, pending) -> None:
-    from app.main import _finish_login
-
-    class _Target:
-        def __init__(self, chat_id: int):
-            self.chat = type("Chat", (), {"id": chat_id})()
-
-        async def answer(self, text: str) -> None:
-            await bot.send_message(self.chat.id, text)
-
-    chat_id = pending.chat_id
-    if chat_id is None:
-        return
-    await _finish_login(_Target(chat_id), client, store, settings, pending)
+    return True

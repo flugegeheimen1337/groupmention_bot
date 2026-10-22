@@ -9,10 +9,14 @@ class StoreTests(unittest.TestCase):
     def test_sent_messages_are_remembered(self):
         with tempfile.TemporaryDirectory() as folder:
             store = Store(Path(folder) / "mentions.sqlite3")
-            self.assertFalse(store.was_sent(1, 2))
-            store.mark_sent(1, 2)
-            self.assertTrue(store.was_sent(1, 2))
-            store.mark_sent(1, 2)
+            self.assertFalse(store.was_sent(7, 1, 2))
+            store.mark_sent(7, 1, 2)
+            self.assertTrue(store.was_sent(7, 1, 2))
+            self.assertFalse(store.was_sent(8, 1, 2))
+            store.mark_sent(7, 1, 2)
+            store.set_notify_chat_for(7, 70)
+            self.assertEqual(store.get_notify_chat_for(7), 70)
+            self.assertIsNone(store.get_notify_chat_for(8))
             self.assertIsNone(store.get_notify_chat())
             store.set_notify_chat(42)
             self.assertEqual(store.get_notify_chat(), 42)

@@ -7,15 +7,7 @@ class Store:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(path)
         self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS sent (
-                chat_id INTEGER NOT NULL,
-                message_id INTEGER NOT NULL,
-                PRIMARY KEY (chat_id, message_id)
-            )
-            """
-        )
+        self._ensure_sent_table()
         self.conn.execute(
             """
             CREATE TABLE IF NOT EXISTS settings (
@@ -26,19 +18,58 @@ class Store:
         )
         self.conn.commit()
 
-    def was_sent(self, chat_id: int, message_id: int) -> bool:
+    def _ensure_sent_table(self) -> None:
         row = self.conn.execute(
-            "SELECT 1 FROM sent WHERE chat_id = ? AND message_id = ?",
-            (chat_id, message_id),
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sent'"
+        ).fetchone()
+        if row is not None:
+            columns = [item[1] for item in self.conn.execute("PRAGMA table_info(sent)")]
+            if "user_id" not in columns:
+                self.conn.execute("ALTER TABLE sent RENAME TO sent_old")
+                self.conn.execute("DROP TABLE sent_old")
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sent (
+                user_id INTEGER NOT NULL,
+                chat_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                PRIMARY KEY (user_id, chat_id, message_id)
+            )
+            """
+        )
+
+    def was_sent(self, user_id: int, chat_id: int, message_id: int) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM sent WHERE user_id = ? AND chat_id = ? AND message_id = ?",
+            (user_id, chat_id, message_id),
         ).fetchone()
         return row is not None
 
-    def mark_sent(self, chat_id: int, message_id: int) -> None:
+    def mark_sent(self, user_id: int, chat_id: int, message_id: int) -> None:
         self.conn.execute(
-            "INSERT OR IGNORE INTO sent (chat_id, message_id) VALUES (?, ?)",
-            (chat_id, message_id),
+            "INSERT OR IGNORE INTO sent (user_id, chat_id, message_id) VALUES (?, ?, ?)",
+            (user_id, chat_id, message_id),
         )
         self.conn.commit()
+
+    def set_notify_chat_for(self, account_id: int, chat_id: int) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO settings (key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (f"notify:{account_id}", str(chat_id)),
+        )
+        self.conn.commit()
+
+    def get_notify_chat_for(self, account_id: int) -> int | None:
+        row = self.conn.execute(
+            "SELECT value FROM settings WHERE key = ?",
+            (f"notify:{account_id}",),
+        ).fetchone()
+        if row is None:
+            return None
+        return int(row[0])
 
     def get_notify_chat(self) -> int | None:
         row = self.conn.execute(
