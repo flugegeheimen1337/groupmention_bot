@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import signal
+import time
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
@@ -16,11 +17,12 @@ from app.db import Store
 from app.format import notification_html, sender_label
 from app.hub import AccountHub
 from app.links import build_message_link
-from app.login_ui import is_login_code, mask_phone
-from app.login_web import code_sent_text, start_login_site
+from app.login_ui import code_was_sent, describe_code_delivery, is_login_code, mask_phone
+from app.login_web import code_sent_text, request_login_code, start_login_site
 from app.mentions import is_explicit_mention, is_group_chat
 
 log = logging.getLogger("groupmention")
+CODE_RETRY_SECONDS = 120
 
 START_TEXT = (
     "К этому боту можно подключить несколько аккаунтов. "
@@ -71,14 +73,21 @@ async def _request_code(message: Message, hub: AccountHub) -> None:
     if not pending.phone:
         await message.answer("Сначала отправьте номер в виде +79991234567.", reply_markup=login_keyboard())
         return
+    if pending.step == "code" and pending.code_hash and pending.page_url and pending.sent_at:
+        wait = CODE_RETRY_SECONDS - (time.monotonic() - pending.sent_at)
+        if wait > 0:
+            await message.answer(
+                "Код уже запрошен и ещё действует. Повторный запрос отменит его.\n\n"
+                f"{pending.delivery}\n\n{pending.page_url}",
+                reply_markup=login_keyboard(),
+            )
+            return
     client = await hub.client_for(user.id)
     pending.client = client
     pending.chat_id = message.chat.id
     try:
         async with pending.lock:
-            sent = await client.send_code_request(pending.phone)
-            pending.code_hash = sent.phone_code_hash
-            pending.step = "code"
+            sent = await request_login_code(client, pending.phone)
     except FloodWaitError as exc:
         await message.answer(f"Telegram просит подождать {exc.seconds} секунд.", reply_markup=login_keyboard())
         return
@@ -86,11 +95,24 @@ async def _request_code(message: Message, hub: AccountHub) -> None:
         log.exception("Не удалось отправить код")
         await message.answer("Не удалось отправить код. Попробуйте ещё раз.", reply_markup=login_keyboard())
         return
+    type_name = type(sent.type).__name__ if getattr(sent, "type", None) else ""
+    delivery = describe_code_delivery(type_name)
+    log.info("Код запрошен, способ доставки: %s", type_name or "неизвестен")
+    if not code_was_sent(type_name):
+        pending.step = None
+        pending.code_hash = None
+        pending.sent_at = None
+        await message.answer(delivery, reply_markup=login_keyboard())
+        return
+    pending.code_hash = sent.phone_code_hash
+    pending.step = "code"
+    pending.sent_at = time.monotonic()
+    pending.delivery = delivery
     url = hub.issue_link(pending)
     if not url:
         await message.answer("Страница ввода кода не запущена.", reply_markup=login_keyboard())
         return
-    await message.answer(code_sent_text(mask_phone(pending.phone), url), reply_markup=login_keyboard())
+    await message.answer(code_sent_text(mask_phone(pending.phone), url, delivery), reply_markup=login_keyboard())
 
 
 def _register_bot(dp: Dispatcher, hub: AccountHub, bot: Bot, store: Store) -> None:
@@ -136,6 +158,9 @@ def _register_bot(dp: Dispatcher, hub: AccountHub, bot: Bot, store: Store) -> No
         if phone and len(phone) >= 11 and not is_login_code(message.text):
             pending.phone = phone
             pending.chat_id = message.chat.id
+            pending.step = None
+            pending.code_hash = None
+            pending.sent_at = None
             await message.answer(
                 f"Номер {mask_phone(phone)} сохранён. Нажмите «Получить код».",
                 reply_markup=login_keyboard(),

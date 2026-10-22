@@ -1,6 +1,13 @@
 import unittest
 
-from app.login_ui import is_login_code, mask_phone, normalize_login_code, user_can_connect
+from app.login_ui import (
+    code_was_sent,
+    describe_code_delivery,
+    is_login_code,
+    mask_phone,
+    normalize_login_code,
+    user_can_connect,
+)
 from app.login_web import code_sent_text
 
 
@@ -28,6 +35,17 @@ class LoginUiTests(unittest.TestCase):
         text = code_sent_text("+971***75", "http://example.test/abc")
         self.assertIn("сразу отменяет код", text)
         self.assertIn("http://example.test/abc", text)
+        self.assertIn("не SMS", text)
+
+    def test_app_delivery_points_at_the_service_chat(self):
+        text = describe_code_delivery("SentCodeTypeApp")
+        self.assertIn("служебный чат", text)
+        self.assertIn("не SMS", text)
+
+    def test_email_setup_means_no_code_was_sent(self):
+        self.assertFalse(code_was_sent("SentCodeTypeSetUpEmailRequired"))
+        self.assertTrue(code_was_sent("SentCodeTypeApp"))
+        self.assertIn("почту", describe_code_delivery("SentCodeTypeSetUpEmailRequired"))
 
 
 if __name__ == "__main__":

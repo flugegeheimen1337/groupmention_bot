@@ -21,6 +21,8 @@ class PendingLogin:
         self.chat_id: int | None = None
         self.page_url: str | None = None
         self.client: TelegramClient | None = None
+        self.sent_at: float | None = None
+        self.delivery: str | None = None
         self.lock = asyncio.Lock()
 
 

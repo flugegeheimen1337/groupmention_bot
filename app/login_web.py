@@ -1,6 +1,11 @@
+import logging
 import os
 
 from aiohttp import web
+from telethon import utils
+from telethon.tl.functions.auth import SendCodeRequest
+from telethon.tl.types import CodeSettings
+from telethon.tl.types.auth import SentCodeSuccess
 from telethon.errors import (
     PasswordHashInvalidError,
     PhoneCodeExpiredError,
@@ -9,6 +14,8 @@ from telethon.errors import (
 )
 
 from app.login_ui import is_login_code, normalize_login_code
+
+log = logging.getLogger("groupmention")
 
 PAGE = """<!doctype html>
 <html lang="ru">
@@ -29,12 +36,29 @@ PAGE = """<!doctype html>
 """
 
 
-def code_sent_text(masked_phone: str, url: str) -> str:
+def code_sent_text(masked_phone: str, url: str, delivery: str | None = None) -> str:
+    where = delivery or (
+        "Это не SMS. Откройте Telegram и найдите служебный чат «Telegram» "
+        "(синяя галочка). Пять цифр лежат в последнем сообщении этого чата."
+    )
     return (
-        f"Код отправлен на {masked_phone}. Он в служебном чате «Telegram».\n\n"
+        f"Код для {masked_phone} запрошен.\n\n"
+        f"{where}\n\n"
         "Не отправляйте эти цифры сообщением в Telegram: он сразу отменяет код.\n\n"
         f"Откройте страницу и введите код там:\n{url}"
     )
+
+
+async def request_login_code(client, phone: str):
+    parsed = utils.parse_phone(phone) or phone
+    client._phone_code_hash.pop(parsed, None)
+    result = await client(SendCodeRequest(parsed, client.api_id, client.api_hash, CodeSettings()))
+    if isinstance(result, SentCodeSuccess):
+        raise RuntimeError("Сессия уже авторизована")
+    if result.phone_code_hash:
+        client._phone_code_hash[parsed] = result.phone_code_hash
+    client._phone = parsed
+    return result
 
 
 def public_base() -> str | None:
@@ -113,12 +137,16 @@ async def start_login_site(hub, bot) -> bool:
                 'type="password"',
             )
         except PhoneCodeInvalidError:
+            log.info("Код отклонён: цифры не совпали")
             return _page("Код не подошёл. Проверьте цифры в служебном чате.", "Код", 'inputmode="numeric"')
         except PhoneCodeExpiredError:
             pending.step = None
             pending.code_hash = None
+            pending.sent_at = None
+            log.info("Код отклонён: срок действия истёк")
             return _page("Этот код уже не действует. В боте нажмите «Получить код» ещё раз.", "Код", 'inputmode="numeric"')
         except Exception:
+            log.exception("Вход по коду не выполнен")
             return _page("Войти не получилось. Запросите новый код в боте.", "Код", 'inputmode="numeric"')
         await hub.complete(pending, bot)
         return web.Response(text="Вход выполнен. Вернитесь в бота MentionMe.", content_type="text/plain")

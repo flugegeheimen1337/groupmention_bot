@@ -1,3 +1,33 @@
+def describe_code_delivery(type_name: str) -> str:
+    if type_name == "SentCodeTypeApp":
+        return (
+            "Это не SMS. Откройте Telegram и найдите служебный чат «Telegram» "
+            "(синяя галочка). Пять цифр лежат в последнем сообщении этого чата."
+        )
+    if type_name in {"SentCodeTypeSms", "SentCodeTypeFirebaseSms"}:
+        return "Telegram отправил код в SMS на этот номер."
+    if type_name == "SentCodeTypeCall":
+        return "Telegram позвонит и продиктует код."
+    if type_name in {"SentCodeTypeFlashCall", "SentCodeTypeMissedCall"}:
+        return "Telegram сделает звонок. Код — последние цифры номера, с которого звонят."
+    if type_name == "SentCodeTypeEmailCode":
+        return "Код отправлен на почту, привязанную к аккаунту Telegram."
+    if type_name == "SentCodeTypeFragmentSms":
+        return "Код отправлен SMS через Fragment."
+    if type_name in {"SentCodeTypeSmsWord", "SentCodeTypeSmsPhrase"}:
+        return "В SMS придёт слово или фраза. Введите их на странице целиком."
+    if type_name == "SentCodeTypeSetUpEmailRequired":
+        return (
+            "Telegram не отправил код: в приложении сначала нужно привязать почту "
+            "в настройках аккаунта, затем нажать «Получить код» ещё раз."
+        )
+    return "Откройте служебный чат «Telegram» в приложении и проверьте SMS на этот номер."
+
+
+def code_was_sent(type_name: str) -> bool:
+    return type_name != "SentCodeTypeSetUpEmailRequired"
+
+
 def mask_phone(phone: str) -> str:
     if len(phone) < 6:
         return phone
