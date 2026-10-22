@@ -7,7 +7,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
 from aiogram.filters import CommandStart
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, Message, ReplyKeyboardMarkup
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError
 
@@ -37,12 +37,14 @@ def _button(url: str) -> InlineKeyboardMarkup:
     )
 
 
-def login_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[
-            InlineKeyboardButton(text="Получить код", callback_data="login:send"),
-            InlineKeyboardButton(text="Ввести код", callback_data="login:enter"),
-        ]]
+def login_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[
+            KeyboardButton(text="Получить код"),
+            KeyboardButton(text="Ввести код"),
+        ]],
+        resize_keyboard=True,
+        is_persistent=True,
     )
 
 
@@ -58,6 +60,39 @@ async def _send(bot: Bot, chat_id: int, text: str, url: str | None) -> None:
             await asyncio.sleep(exc.retry_after + 1)
 
 
+async def _request_code(message: Message, hub: AccountHub) -> None:
+    user = message.from_user
+    if user is None:
+        return
+    pending = hub.for_user(user.id)
+    if user.id in hub.clients and await hub.clients[user.id].is_user_authorized():
+        await message.answer("Этот аккаунт уже подключён. Упоминания из его групп приходят сюда.", reply_markup=login_keyboard())
+        return
+    if not pending.phone:
+        await message.answer("Сначала отправьте номер в виде +79991234567.", reply_markup=login_keyboard())
+        return
+    client = await hub.client_for(user.id)
+    pending.client = client
+    pending.chat_id = message.chat.id
+    try:
+        async with pending.lock:
+            sent = await client.send_code_request(pending.phone)
+            pending.code_hash = sent.phone_code_hash
+            pending.step = "code"
+    except FloodWaitError as exc:
+        await message.answer(f"Telegram просит подождать {exc.seconds} секунд.", reply_markup=login_keyboard())
+        return
+    except Exception:
+        log.exception("Не удалось отправить код")
+        await message.answer("Не удалось отправить код. Попробуйте ещё раз.", reply_markup=login_keyboard())
+        return
+    url = hub.issue_link(pending)
+    if not url:
+        await message.answer("Страница ввода кода не запущена.", reply_markup=login_keyboard())
+        return
+    await message.answer(code_sent_text(mask_phone(pending.phone), url), reply_markup=login_keyboard())
+
+
 def _register_bot(dp: Dispatcher, hub: AccountHub, bot: Bot, store: Store) -> None:
     @dp.message(CommandStart())
     async def on_start(message: Message) -> None:
@@ -66,53 +101,30 @@ def _register_bot(dp: Dispatcher, hub: AccountHub, bot: Bot, store: Store) -> No
             return
         if user.id in hub.clients and await hub.clients[user.id].is_user_authorized():
             store.set_notify_chat_for(user.id, message.chat.id)
-            await message.answer("Этот аккаунт уже подключён. Упоминания из его групп приходят сюда.")
-            return
-        await message.answer(START_TEXT)
-
-    @dp.callback_query(F.data == "login:send")
-    async def on_send_code(query: CallbackQuery) -> None:
-        user = query.from_user
-        pending = hub.for_user(user.id)
-        if not pending.phone:
-            await query.answer("Сначала отправьте номер сообщением.", show_alert=True)
-            return
-        if user.id in hub.clients and await hub.clients[user.id].is_user_authorized():
-            await query.answer("Этот аккаунт уже подключён.", show_alert=True)
-            return
-        client = await hub.client_for(user.id)
-        pending.client = client
-        if query.message:
-            pending.chat_id = query.message.chat.id
-        try:
-            async with pending.lock:
-                sent = await client.send_code_request(pending.phone)
-                pending.code_hash = sent.phone_code_hash
-                pending.step = "code"
-        except FloodWaitError as exc:
-            await query.answer(f"Telegram просит подождать {exc.seconds} секунд.", show_alert=True)
-            return
-        except Exception:
-            log.exception("Не удалось отправить код")
-            await query.answer("Не удалось отправить код. Попробуйте ещё раз.", show_alert=True)
-            return
-        url = hub.issue_link(pending)
-        await query.answer("Код отправлен")
-        if query.message and url:
-            await query.message.answer(code_sent_text(mask_phone(pending.phone), url))
-
-    @dp.callback_query(F.data == "login:enter")
-    async def on_enter_code(query: CallbackQuery) -> None:
-        pending = hub.for_user(query.from_user.id)
-        url = pending.page_url
-        if not url:
-            await query.answer("Сначала нажмите «Получить код».", show_alert=True)
-            return
-        await query.answer()
-        if query.message:
-            await query.message.answer(
-                "Введите код на странице, не в этот чат. Иначе Telegram его отменит.\n" + url
+            await message.answer(
+                "Этот аккаунт уже подключён. Упоминания из его групп приходят сюда.",
+                reply_markup=login_keyboard(),
             )
+            return
+        await message.answer(START_TEXT, reply_markup=login_keyboard())
+
+    @dp.message(F.text == "Получить код")
+    async def on_send_code(message: Message) -> None:
+        await _request_code(message, hub)
+
+    @dp.message(F.text == "Ввести код")
+    async def on_enter_code(message: Message) -> None:
+        user = message.from_user
+        if user is None:
+            return
+        url = hub.for_user(user.id).page_url
+        if not url:
+            await message.answer("Сначала нажмите «Получить код».", reply_markup=login_keyboard())
+            return
+        await message.answer(
+            "Введите код на странице, не в этот чат. Иначе Telegram его отменит.\n" + url,
+            reply_markup=login_keyboard(),
+        )
 
     @dp.message()
     async def on_text(message: Message) -> None:
@@ -134,7 +146,8 @@ def _register_bot(dp: Dispatcher, hub: AccountHub, bot: Bot, store: Store) -> No
             pending.code_hash = None
             await message.answer(
                 "Этот код уже нельзя использовать: Telegram отменяет его, если отправить цифры сообщением. "
-                "Нажмите «Получить код» и введите новый код на странице по ссылке."
+                "Нажмите «Получить код» и введите новый код на странице по ссылке.",
+                reply_markup=login_keyboard(),
             )
 
 
