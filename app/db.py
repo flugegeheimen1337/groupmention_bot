@@ -132,6 +132,25 @@ class Store:
         )
         self.conn.commit()
 
+    def set_login_phone(self, user_id: int, phone: str) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO settings (key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (f"phone:{user_id}", phone),
+        )
+        self.conn.commit()
+
+    def get_login_phone(self, user_id: int) -> str | None:
+        row = self.conn.execute(
+            "SELECT value FROM settings WHERE key = ?",
+            (f"phone:{user_id}",),
+        ).fetchone()
+        if row is None:
+            return None
+        return str(row[0])
+
     def set_notify_chat_for(self, account_id: int, chat_id: int) -> None:
         self.conn.execute(
             """

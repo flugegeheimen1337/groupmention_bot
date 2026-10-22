@@ -3,7 +3,7 @@ import os
 
 from aiohttp import web
 from telethon import utils
-from telethon.tl.functions.auth import SendCodeRequest
+from telethon.tl.functions.auth import ResendCodeRequest, SendCodeRequest
 from telethon.tl.types import CodeSettings
 from telethon.tl.types.auth import SentCodeSuccess
 from telethon.errors import (
@@ -53,6 +53,20 @@ async def request_login_code(client, phone: str):
     parsed = utils.parse_phone(phone) or phone
     client._phone_code_hash.pop(parsed, None)
     result = await client(SendCodeRequest(parsed, client.api_id, client.api_hash, CodeSettings()))
+    if isinstance(result, SentCodeSuccess):
+        raise RuntimeError("Сессия уже авторизована")
+    if result.phone_code_hash:
+        client._phone_code_hash[parsed] = result.phone_code_hash
+    client._phone = parsed
+    return result
+
+
+async def resend_login_code(client, phone: str, phone_hash: str):
+    parsed = utils.parse_phone(phone) or phone
+    try:
+        result = await client(ResendCodeRequest(parsed, phone_hash))
+    except PhoneCodeExpiredError:
+        return None
     if isinstance(result, SentCodeSuccess):
         raise RuntimeError("Сессия уже авторизована")
     if result.phone_code_hash:
@@ -143,6 +157,7 @@ async def start_login_site(hub, bot) -> bool:
             pending.step = None
             pending.code_hash = None
             pending.sent_at = None
+            pending.resend_after = None
             log.info("Код отклонён: срок действия истёк")
             return _page("Этот код уже не действует. В боте нажмите «Получить код» ещё раз.", "Код", 'inputmode="numeric"')
         except Exception:

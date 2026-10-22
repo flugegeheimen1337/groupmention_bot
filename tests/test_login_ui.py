@@ -41,6 +41,7 @@ class LoginUiTests(unittest.TestCase):
         text = describe_code_delivery("SentCodeTypeApp")
         self.assertIn("служебный чат", text)
         self.assertIn("не SMS", text)
+        self.assertIn("архив", text)
 
     def test_email_setup_means_no_code_was_sent(self):
         self.assertFalse(code_was_sent("SentCodeTypeSetUpEmailRequired"))
