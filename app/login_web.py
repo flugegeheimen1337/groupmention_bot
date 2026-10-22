@@ -42,6 +42,9 @@ def code_sent_text(masked_phone: str, url: str) -> str:
 
 
 def public_base() -> str | None:
+    explicit = os.environ.get("LOGIN_PUBLIC_URL", "").strip()
+    if explicit:
+        return explicit.rstrip("/")
     host = os.environ.get("LOGIN_PUBLIC_HOST", "").strip()
     port = os.environ.get("LOGIN_PORT", "8080").strip() or "8080"
     if not host:
