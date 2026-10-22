@@ -100,6 +100,11 @@ async def main() -> None:
         raise SystemExit("Сессия не авторизована. Сначала выполните: python -m app.login")
 
     me = await client.get_me()
+    expected = settings.expected_username
+    if expected and (me.username or "").casefold() != expected.casefold():
+        await client.disconnect()
+        store.close()
+        raise SystemExit(f"Сессия от другого аккаунта. Для этого запуска нужен @{expected}.")
     log.info("Аккаунт: id %s, %s", me.id, f"@{me.username}" if me.username else "без username")
     bot = Bot(
         settings.bot_token,

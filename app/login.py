@@ -1,5 +1,6 @@
 import asyncio
 import getpass
+from pathlib import Path
 
 from telethon import TelegramClient
 
@@ -17,6 +18,12 @@ async def run() -> None:
     )
     me = await client.get_me()
     username = f"@{me.username}" if me.username else "без username"
+    expected = settings.expected_username
+    if expected and (me.username or "").casefold() != expected.casefold():
+        await client.disconnect()
+        session_file = Path(str(settings.session_path) + ".session")
+        session_file.unlink(missing_ok=True)
+        raise SystemExit(f"Вошли в {username}. Для этого запуска нужен @{expected}.")
     print(f"Вход выполнен: id {me.id}, {username}")
     await client.disconnect()
 

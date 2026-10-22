@@ -13,6 +13,7 @@ class Settings:
     api_hash: str
     bot_token: str | None
     phone: str | None
+    expected_username: str | None
     session_path: Path
     database_path: Path
 
@@ -24,12 +25,31 @@ def _resolve(value: str) -> Path:
     return ROOT / path
 
 
+def normalize_phone(value: str | None) -> str | None:
+    if not value:
+        return None
+    phone = "".join(ch for ch in value if ch.isdigit() or ch == "+")
+    if phone.startswith("8") and len(phone) == 11:
+        phone = "+7" + phone[1:]
+    if phone and not phone.startswith("+"):
+        phone = "+" + phone
+    return phone or None
+
+
+def normalize_username(value: str | None) -> str | None:
+    if not value:
+        return None
+    username = value.strip().lstrip("@")
+    return username or None
+
+
 def load_settings(*, require_bot: bool) -> Settings:
     load_dotenv(ROOT / ".env")
     raw_id = os.environ.get("API_ID", "").strip()
     api_hash = os.environ.get("API_HASH", "").strip()
     bot_token = os.environ.get("BOT_TOKEN", "").strip() or None
-    phone = os.environ.get("PHONE", "").strip() or None
+    phone = normalize_phone(os.environ.get("PHONE"))
+    expected_username = normalize_username(os.environ.get("EXPECTED_USERNAME"))
     if not raw_id or not api_hash:
         raise SystemExit("В .env нужны API_ID и API_HASH.")
     try:
@@ -43,6 +63,7 @@ def load_settings(*, require_bot: bool) -> Settings:
         api_hash=api_hash,
         bot_token=bot_token,
         phone=phone,
+        expected_username=expected_username,
         session_path=_resolve(os.environ.get("SESSION_PATH", "data/user").strip()),
         database_path=_resolve(os.environ.get("DATABASE_PATH", "data/mentions.sqlite3").strip()),
     )
