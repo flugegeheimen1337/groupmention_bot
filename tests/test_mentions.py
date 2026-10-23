@@ -105,17 +105,22 @@ class FormatTests(unittest.TestCase):
 
     def test_notification_escapes_html_and_keeps_title(self):
         text = notification_html("A & B", "Иван", "<b>привет</b>")
-        self.assertIn("<b>A &amp; B</b>", text)
+        self.assertIn("Название группы: A &amp; B", text)
+        self.assertIn("Отправитель: Иван", text)
         self.assertIn("&lt;b&gt;привет&lt;/b&gt;", text)
 
     def test_empty_message(self):
-        self.assertIn("Сообщение без текста", notification_html("Группа", "Иван", "  "))
+        self.assertIn("Текст сообщения:\nСообщение без текста", notification_html("Группа", "Иван", "  "))
 
     def test_read_status_labels_the_group_message(self):
-        body = notification_html("Группа", "Иван", "текст")
-        self.assertTrue(with_read_status(body, False).startswith("<b>Не прочитано</b>\n"))
-        self.assertTrue(with_read_status(body, True).startswith("<b>Прочитано</b>\n"))
-        self.assertIn("<b>Группа</b>", with_read_status(body, True))
+        body = notification_html("Бот тг", "Maksim Matyunin (@maxm_dm)", "Проверка")
+        unread = with_read_status(body, False)
+        read = with_read_status(body, True)
+        self.assertTrue(unread.startswith("Статус: Не прочитано\n"))
+        self.assertTrue(read.startswith("Статус: Прочитано\n"))
+        self.assertIn("Название группы: Бот тг", read)
+        self.assertIn("Отправитель: Maksim Matyunin (@maxm_dm)", read)
+        self.assertIn("Текст сообщения:\nПроверка", read)
 
 
 if __name__ == "__main__":

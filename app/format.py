@@ -22,7 +22,7 @@ def sender_label(sender: object | None, post_author: str | None = None) -> str:
 
 def with_read_status(body: str, read: bool) -> str:
     label = "Прочитано" if read else "Не прочитано"
-    return f"<b>{label}</b>\n{body}"
+    return f"Статус: {label}\n{body}"
 
 
 def notification_html(chat_title: str, sender: str, text: str | None) -> str:
@@ -30,4 +30,8 @@ def notification_html(chat_title: str, sender: str, text: str | None) -> str:
     escaped = html_escape(body)
     if len(escaped) > _MAX_BODY:
         escaped = escaped[:_MAX_BODY].rstrip() + "…"
-    return f"<b>{html_escape(chat_title or 'Группа')}</b>\n{html_escape(sender)}\n\n{escaped}"
+    return (
+        f"Название группы: {html_escape(chat_title or 'Группа')}\n"
+        f"Отправитель: {html_escape(sender)}\n\n"
+        f"Текст сообщения:\n{escaped}"
+    )
